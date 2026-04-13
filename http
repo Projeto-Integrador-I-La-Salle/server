@@ -1,0 +1,32 @@
+#!/bin/bash
+
+URL="http://localhost:3000/products"
+
+response=$(curl -s -D - -w "\nTIME_TOTAL:%{time_total}\nHTTP_STATUS:%{http_code}" \
+  -X POST "$URL" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Mouse Gamer",
+    "price": 150,
+    "active": true,
+    "code": 1,
+    "quantity": 10,
+    "brand": "Razer"
+  }')
+
+# separa headers + body + métricas
+headers=$(echo "$response" | sed -n '/HTTP\/1.1/,/^\r$/p')
+body=$(echo "$response" | sed -n '/^\r$/,$p' | sed '1d' | sed '/TIME_TOTAL:/,$d')
+time=$(echo "$response" | grep "TIME_TOTAL" | cut -d ':' -f2)
+status=$(echo "$response" | grep "HTTP_STATUS" | cut -d ':' -f2)
+
+echo "===================="
+echo "STATUS: $status"
+echo "TIME: ${time}s"
+echo "===================="
+
+echo -e "\nHEADERS:"
+echo "$headers"
+
+echo -e "\nBODY:"
+echo "$body"
