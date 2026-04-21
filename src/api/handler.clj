@@ -3,10 +3,14 @@
             [cheshire.core      :as json]
             [clojure.spec.alpha :as s]
             [monger.core :as mg]
-            [monger.collection :as mc ])
+            [monger.collection :as mc ]
+            [api.dowloader :as d]
+            [clojure.java.io :as io])
   (:import [org.bson.types ObjectId]
            [com.mongodb DB WriteConcern]
-           [java.time LocalDateTime]))
+           [java.time LocalDateTime]
+           [java.nio.file Files]
+           [java.net URLConnection]))
 
 (defonce mongo-conn
   (mg/connect-via-uri "mongodb://root:root@localhost:27017/admin?authSource=admin"))
@@ -40,6 +44,12 @@
     :created-at (:created-at event)}
    (:payload event)))
 
+(defmethod apply-event :product/product-updated
+  [state event]
+  (merge state
+         (:payload event)
+         (:updatedAt (:created-at event))))
+
 (defn project
   ([events]
    (project {} events))
@@ -48,47 +58,104 @@
 
 (defn serialize [data]
   (clojure.walk/postwalk
-    (fn [x]
-      (if (instance? org.bson.types.ObjectId x)
-        (str x)
-        x))
-    data))
+   (fn [x]
+     (if (instance? org.bson.types.ObjectId x)
+       (str x)
+       x))
+   data))
+
+(defn find-product
+  [id]
+  (->> (mc/find-maps db "events" {:aggregate-id (str id)})
+       (project)))
 
 (defn get-by-aggregate-id
   [aggregate-id]
-  (let [events (mc/find-maps db "events" { :aggregate-id (ObjectId. (str aggregate-id))})]
+  (let [events (find-product aggregate-id)]
     (json-response 200
                    {:data (->> events
-                               (project)
                                (serialize))})))
 
 (defn products-handler
+  "Saves a product."
   [req]
-  (case (:request-method req)
-    :get
-    (json-response 200 {:data (get-by-aggregate-id)})
+  (let [data (parse-body req)]
+    (if (s/valid? ::schemas/product data)
+      (let [data (schemas/apply-defaults data)
+            aggregate-id (ObjectId.)]
+        (try
+          (let [doc (mc/insert-and-return db "events"
+                                          {:type          "product-created"
+                                           :aggregate-id   (str aggregate-id)
+                                           :aggregate-type "product"
+                                           :payload        data
+                                           :created-at     (str (LocalDateTime/now))})]
+            (println "[INFO] Inserido:" doc)
+            (json-response 201 {:id      (str aggregate-id)
+                                :data    data}))
+          (catch Exception e
+            (println "[ERROR]:" (.getMessage e))
+            (json-response 500 {:error (.getMessage e)}))))
 
-    :post
-    (let [data (parse-body req)]
-      (if (s/valid? ::schemas/product data)
-        (let [data (schemas/apply-defaults data)
-              aggregate-id (ObjectId.)]
-          (try
-            (let [doc (mc/insert-and-return db "events"
-                                            {:type          "product-created"
-                                             :aggregate-id   aggregate-id
-                                             :aggregate-type "product"
-                                             :payload       data
-                                             :createdAt     (str (LocalDateTime/now))})]
-              (println "[INFO] Inserido:" doc)
-              (json-response 201 {:id      (str aggregate-id)
-                                  :data    data}))
-            (catch Exception e
-              (println "[ERROR]:" (.getMessage e))
-              (json-response 500 {:error (.getMessage e)}))))
+      (json-response 400 {:error   "Payload inválido"
+                          :details (s/explain-str ::schemas/product data)})))
 
-        (json-response 400 {:error   "Payload inválido"
-                            :details (s/explain-str ::schemas/product data)})))
+  {:status 405 :body "Method Not Allowed"})
 
-    {:status 405 :body "Method Not Allowed"}))
+(defn update-products-handler
+  "Updates a product."
+  [id req]
+  (let [product (find-product id)
+        data    (parse-body req)]
+    (cond
+      (empty? product)
+      (json-response 404 {:error "Not Found"})
+
+      (and (contains? data :price)
+           (not (number? (:price data))))
+      (json-response 400 {:error "invalid price format"})
+      :else
+      (do
+        (when (seq (:images data))
+          (doall (map d/download-image-safe (:images data))))
+        (mc/insert db "events" {:type           "product-updated"
+                                :aggregate-id   (str id)
+                                :aggregate-type "product"
+                                :payload        data
+                                :created-at     (str (LocalDateTime/now))})
+        (json-response 204 {})))))
+
+;; get-image section
+(defn safe-filename? [filename]
+  (not (re-find #"\.\." filename)))
+
+(defn content-type [file]
+  (or (URLConnection/guessContentTypeFromName (.getName file))
+      "application/octet-stream"))
+
+(defn get-image [filename]
+  (if (not (safe-filename? filename))
+    (json-response 400 {:error "Invalid filename"})
+
+    (let [file (io/file "uploads" filename)]
+      (if (and (.exists file) (.isFile file))
+        {:status 200
+         :headers {"Content-Type" (content-type file)
+                   "Cache-Control" "public, max-age=31536000"} ;; 1 year
+         :body (io/input-stream file)}
+
+        (json-response 404 {:error "Not Found"})))))
+
+(defn find-all-products
+  []
+  (->> (mc/find-maps db "events" {:aggregate-type "product"})
+       (group-by :aggregate-id)
+       (vals)
+       (map project)
+       (map serialize)))
+
+(defn get-all-products
+  []
+  (json-response 200
+                 {:data (find-all-products)}))
 
