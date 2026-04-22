@@ -35,10 +35,6 @@
         bytes (:body response)
         content-type (get headers "content-type")]
 
-    (println "STATUS:" status)
-    (println "CONTENT-TYPE:" content-type)
-    (println "SIZE:" (count bytes))
-
     (when (and (= status 200)
                content-type
                (re-find #"^image/" content-type)

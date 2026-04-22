@@ -5,6 +5,20 @@
             [compojure.core :refer  [defroutes GET POST PATCH]])
   (:gen-class))
 
+(defn wrap-cors [handler]
+  (fn [req]
+    (let [cors-headers {"Access-Control-Allow-Origin"  "*"
+                        "Access-Control-Allow-Methods" "GET, POST, PATCH, DELETE, OPTIONS"
+                        "Access-Control-Allow-Headers" "Content-Type, Authorization"}]
+      
+      (if (= :options (:request-method req))
+        {:status 200
+         :headers cors-headers
+         :body ""}
+        
+        (let [resp (handler req)]
+          (update resp :headers merge cors-headers))))))
+
 (defroutes app
   (GET   "/"               []   {:status 200 :body "Home"})
   (GET   "/health"         []   {:status 200 :body "OK"})
@@ -17,10 +31,13 @@
   (GET "/images/:filename" [filename] (handler/get-image filename))
   (fn                      [_]  {:status 404 :body "Not Found"}))
 
+(def app-with-cors
+  (wrap-cors app))
+
 (defonce server (atom nil))
 
 (defn start! []
-  (reset! server (http/run-server app {:port 3000}))
+  (reset! server (http/run-server app-with-cors {:port 3000}))
   (println "Server rodando em http://localhost:3000"))
 
 (defn stop! []

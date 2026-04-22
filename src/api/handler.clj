@@ -115,13 +115,20 @@
            (not (number? (:price data))))
       (json-response 400 {:error "invalid price format"})
       :else
-      (do
-        (when (seq (:images data))
-          (doall (map d/download-image-safe (:images data))))
+      (let [images (:images data)
+            downloaded-images (when (seq images)
+                               (->> images
+                                    (map d/download-image-safe)
+                                    (remove nil?)
+                                    (vec)))
+            new-data (if downloaded-images
+                       (assoc data :images downloaded-images)
+                       data)]
+
         (mc/insert db "events" {:type           "product-updated"
                                 :aggregate-id   (str id)
                                 :aggregate-type "product"
-                                :payload        data
+                                :payload        new-data
                                 :created-at     (str (LocalDateTime/now))})
         (json-response 204 {})))))
 
@@ -157,5 +164,24 @@
 (defn get-all-products
   []
   (json-response 200
-                 {:data (find-all-products)}))
+                 {:content (find-all-products)}))
+
+;;(update-products-handler
+;; "69dd8bc497d50f9dfbd26bb2"
+;; {:body (java.io.ByteArrayInputStream.(.getBytes "{\"price\":12.39}"))})
+
+;; Images  
+;;(update-products-handler
+;; "69dd8bc497d50f9dfbd26bb2"
+;; {:body (java.io.ByteArrayInputStream.
+;;         (.getBytes
+;;           (json/generate-string
+;;            {:images ["https://cdn1.staticpanvel.com.br
+
+(update-products-handler
+ "69e7e38897d50f19edb2a587"
+ {:body (java.io.ByteArrayInputStream.
+         (.getBytes
+           (json/generate-string
+            {:images ["https://cdn1.staticpanvel.com.br/produtos/15/94741-15_998246.jpg"]})))})
 
