@@ -1,11 +1,12 @@
 (ns api.handler
-  (:require [api.schemas        :as schemas]
-            [cheshire.core      :as json]
-            [clojure.spec.alpha :as s]
-            [monger.core :as mg]
-            [monger.collection :as mc ]
-            [api.dowloader :as d]
-            [clojure.java.io :as io])
+  (:require [api.schemas            :as schemas]
+            [api.case               :as case]
+            [cheshire.core          :as json]
+            [clojure.spec.alpha     :as s]
+            [monger.core            :as mg]
+            [monger.collection      :as mc]
+            [api.dowloader          :as d]
+            [clojure.java.io        :as io])
   (:import [org.bson.types ObjectId]
            [com.mongodb DB WriteConcern]
            [java.time LocalDateTime]
@@ -18,15 +19,27 @@
 (defonce conn (:conn mongo-conn))
 (defonce db   (mg/get-db conn "app"))
 
-(defn parse-body
-  [req]
-  (json/parse-string (slurp (:body req)) true))
+(defn parse-body [req]
+  (-> req
+      :body
+      slurp
+      (json/parse-string true)
+      (case/->kebab-case)))
 
-(defn json-response
-  [status data]
+(defn json-response [status data]
   {:status status
    :headers {"Content-Type" "application/json"}
-   :body (json/generate-string data)})
+   :body (-> data
+             (case/->camel-case)
+             (json/generate-string))})
+
+(defn insert!
+  [db coll doc]
+  (mc/insert db coll (case/->camel-case doc)))
+
+(defn insert-returning!
+  [db coll doc]
+  (mc/insert-and-return db coll (case/->camel-case doc)))
 
 (defmulti  apply-event
   (fn [_state event]
@@ -40,7 +53,7 @@
   [_state event]
   (merge
    {:resource-type (:aggregate-type event)
-    :product-id (:aggregate-id event)
+    :id (:aggregate-id event)
     :created-at (:created-at event)}
    (:payload event)))
 
@@ -48,7 +61,7 @@
   [state event]
   (merge state
          (:payload event)
-         (:updatedAt (:created-at event))))
+         (:updated-at (:created-at event))))
 
 (defn project
   ([events]
@@ -64,9 +77,13 @@
        x))
    data))
 
-(defn find-product
-  [id]
-  (->> (mc/find-maps db "events" {:aggregate-id (str id)})
+(defn find-maps-kebab
+  [db coll query]
+  (->> (mc/find-maps db coll query)
+       (map case/->kebab-case)))
+
+(defn find-product [id]
+  (->> (find-maps-kebab db "events" {:aggregate-id (str id)})
        (project)))
 
 (defn get-by-aggregate-id
@@ -75,32 +92,39 @@
     (json-response 200
                    {:data (->> events
                                (serialize))})))
-
 (defn products-handler
   "Saves a product."
   [req]
   (let [data (parse-body req)]
     (if (s/valid? ::schemas/product data)
-      (let [data (schemas/apply-defaults data)
-            aggregate-id (ObjectId.)]
+      (let [data         (schemas/apply-defaults data)
+            aggregate-id (ObjectId.)
+            ;; Baixa imagens se vieram no payload
+            images       (:images data)
+            downloaded-images (when (seq images)
+                                (->> images
+                                     (map d/download-image-safe)
+                                     (remove nil?)
+                                     (vec)))
+            data         (if downloaded-images
+                           (assoc data :images downloaded-images)
+                           data)]
         (try
-          (let [doc (mc/insert-and-return db "events"
-                                          {:type          "product-created"
-                                           :aggregate-id   (str aggregate-id)
-                                           :aggregate-type "product"
-                                           :payload        data
-                                           :created-at     (str (LocalDateTime/now))})]
+          (let [doc (insert-returning! db "events"
+                                       {:type           "product-created"
+                                        :aggregate-id   (str aggregate-id)
+                                        :aggregate-type "product"
+                                        :payload        data
+                                        :created-at     (str (LocalDateTime/now))})]
             (println "[INFO] Inserido:" doc)
-            (json-response 201 {:id      (str aggregate-id)
-                                :data    data}))
+            (json-response 201 {:id   (str aggregate-id)
+                                :data data}))
           (catch Exception e
             (println "[ERROR]:" (.getMessage e))
             (json-response 500 {:error (.getMessage e)}))))
 
       (json-response 400 {:error   "Payload inválido"
-                          :details (s/explain-str ::schemas/product data)})))
-
-  {:status 405 :body "Method Not Allowed"})
+                          :details (s/explain-str ::schemas/product data)}))))
 
 (defn update-products-handler
   "Updates a product."
@@ -117,54 +141,64 @@
       :else
       (let [images (:images data)
             downloaded-images (when (seq images)
-                               (->> images
-                                    (map d/download-image-safe)
-                                    (remove nil?)
-                                    (vec)))
+                                (->> images
+                                     (map d/download-image-safe)
+                                     (remove nil?)
+                                     (vec)))
             new-data (if downloaded-images
                        (assoc data :images downloaded-images)
                        data)]
 
-        (mc/insert db "events" {:type           "product-updated"
-                                :aggregate-id   (str id)
-                                :aggregate-type "product"
-                                :payload        new-data
-                                :created-at     (str (LocalDateTime/now))})
-        (json-response 204 {})))))
+        (insert! db "events"
+                 {:type           "product-updated"
+                  :aggregate-id   (str id)
+                  :aggregate-type "product"
+                  :payload        new-data
+                  :created-at     (str (LocalDateTime/now))})
+
+      (json-response 204 {})))))
 
 ;; get-image section
 (defn safe-filename? [filename]
-  (not (re-find #"\.\." filename)))
+(not (re-find #"\.\." filename)))
 
 (defn content-type [file]
-  (or (URLConnection/guessContentTypeFromName (.getName file))
-      "application/octet-stream"))
+(or (URLConnection/guessContentTypeFromName (.getName file))
+    "application/octet-stream"))
 
 (defn get-image [filename]
-  (if (not (safe-filename? filename))
-    (json-response 400 {:error "Invalid filename"})
+(if (not (safe-filename? filename))
+  (json-response 400 {:error "Invalid filename"})
 
-    (let [file (io/file "uploads" filename)]
-      (if (and (.exists file) (.isFile file))
-        {:status 200
-         :headers {"Content-Type" (content-type file)
-                   "Cache-Control" "public, max-age=31536000"} ;; 1 year
-         :body (io/input-stream file)}
+  (let [file (io/file "uploads" filename)]
+    (if (and (.exists file) (.isFile file))
+      {:status 200
+       :headers {"Content-Type" (content-type file)
+                 "Cache-Control" "public, max-age=31536000"} ;; 1 year
+       :body (io/input-stream file)}
 
-        (json-response 404 {:error "Not Found"})))))
+      (json-response 404 {:error "Not Found"})))))
 
 (defn find-all-products
-  []
-  (->> (mc/find-maps db "events" {:aggregate-type "product"})
-       (group-by :aggregate-id)
-       (vals)
-       (map project)
-       (map serialize)))
+  [{:keys [brand name]}]
+  (let [products (->> (find-maps-kebab db "events" {:aggregateType "product"})
+                      (group-by :aggregate-id)
+                      (vals)
+                      (map project)
+                      (map serialize))]
+    (println "[DEBUG] primeiro produto:" (first products))
+    (println "[DEBUG] params:" {:brand brand :name name})
+    (cond->> products
+      name (filter #(clojure.string/includes?
+                     (clojure.string/lower-case (str (:name %)))
+                     (clojure.string/lower-case name))))))
 
-(defn get-all-products
-  []
-  (json-response 200
-                 {:content (find-all-products)}))
+(defn get-all-products [req]
+  (let [params (->> req :query-params
+                    (map (fn [[k v]] [(keyword k) v]))
+                    (into {}))]
+    (json-response 200
+                   {:content (find-all-products params)})))
 
 ;;(update-products-handler
 ;; "69dd8bc497d50f9dfbd26bb2"
@@ -182,6 +216,6 @@
  "69e7e38897d50f19edb2a587"
  {:body (java.io.ByteArrayInputStream.
          (.getBytes
-           (json/generate-string
-            {:images ["https://cdn1.staticpanvel.com.br/produtos/15/94741-15_998246.jpg"]})))})
+          (json/generate-string
+           {:images ["https://cdn1.staticpanvel.com.br/produtos/15/94741-15_998246.jpg"]})))})
 
