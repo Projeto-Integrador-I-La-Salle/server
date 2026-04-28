@@ -7,5 +7,6 @@
          environ/environ {:mvn/version "1.2.0"}
          com.novemberain/monger {:mvn/version "3.5.0"}
          compojure/compojure {:mvn/version "1.7.0"}
-         clj-http/clj-http {:mvn/version "3.13.1"}}}
+         clj-http/clj-http {:mvn/version "3.13.1"}
+         camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}}}
 
