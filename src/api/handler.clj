@@ -79,7 +79,7 @@
 
 (defn find-maps-kebab
   [db coll query]
-  (->> (mc/find-maps db coll query)
+  (->> (mc/find-maps db coll (case/->camel-case query))
        (map case/->kebab-case)))
 
 (defn find-product [id]
@@ -186,8 +186,6 @@
                       (vals)
                       (map project)
                       (map serialize))]
-    (println "[DEBUG] primeiro produto:" (first products))
-    (println "[DEBUG] params:" {:brand brand :name name})
     (cond->> products
       name (filter #(clojure.string/includes?
                      (clojure.string/lower-case (str (:name %)))
@@ -199,23 +197,3 @@
                     (into {}))]
     (json-response 200
                    {:content (find-all-products params)})))
-
-;;(update-products-handler
-;; "69dd8bc497d50f9dfbd26bb2"
-;; {:body (java.io.ByteArrayInputStream.(.getBytes "{\"price\":12.39}"))})
-
-;; Images  
-;;(update-products-handler
-;; "69dd8bc497d50f9dfbd26bb2"
-;; {:body (java.io.ByteArrayInputStream.
-;;         (.getBytes
-;;           (json/generate-string
-;;            {:images ["https://cdn1.staticpanvel.com.br
-
-(update-products-handler
- "69e7e38897d50f19edb2a587"
- {:body (java.io.ByteArrayInputStream.
-         (.getBytes
-          (json/generate-string
-           {:images ["https://cdn1.staticpanvel.com.br/produtos/15/94741-15_998246.jpg"]})))})
-

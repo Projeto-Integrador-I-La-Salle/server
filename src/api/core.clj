@@ -23,12 +23,7 @@
 (defroutes app
   (GET   "/health"         []    {:status 200 :body "OK"})
   (POST  "/products"       req   (handler/products-handler    req))
-  (GET "/products" req
-     (do
-       (println "[DEBUG] query-string:" (:query-string req))
-       (println "[DEBUG] query-params:" (:query-params req))
-       (println "[DEBUG] req keys:" (keys req))
-       (handler/get-all-products req)))
+  (GET   "/products"       req   (handler/get-all-products req))
   (GET   "/products/:id"   [id]  (handler/get-by-aggregate-id id))
   (PATCH "/products/:id"   req
          (let [id (get-in req [:path-params :id])]
