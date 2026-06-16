@@ -19,7 +19,8 @@
 (s/def ::name  string?)
 (s/def ::price number?)
 (s/def ::code number?)
-(s/def ::quantity number?)
+(s/def ::quantity
+  (s/and int? pos?))
 (s/def ::brand string?)
 
 ;; Optionals
@@ -36,3 +37,12 @@
                    ::code
                    ::quantity
                    ::brand]))
+;; order schema
+(s/def ::product-id string?)
+
+(s/def ::item
+  (s/keys :req-un [::product-id
+                   ::quantity]))
+
+(s/def ::order
+  (s/coll-of ::item))

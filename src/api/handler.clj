@@ -61,7 +61,11 @@
   [state event]
   (merge state
          (:payload event)
-         (:updated-at (:created-at event))))
+         {:updated-at (:created-at event)}))
+
+(defmethod apply-event :product/stock-reserved
+  [state event]
+  (update state :quantity - (get-in event [:payload :quantity])))
 
 (defn project
   ([events]
@@ -156,28 +160,28 @@
                   :payload        new-data
                   :created-at     (str (LocalDateTime/now))})
 
-      (json-response 204 {})))))
+        (json-response 204 {})))))
 
 ;; get-image section
 (defn safe-filename? [filename]
-(not (re-find #"\.\." filename)))
+  (not (re-find #"\.\." filename)))
 
 (defn content-type [file]
-(or (URLConnection/guessContentTypeFromName (.getName file))
-    "application/octet-stream"))
+  (or (URLConnection/guessContentTypeFromName (.getName file))
+      "application/octet-stream"))
 
 (defn get-image [filename]
-(if (not (safe-filename? filename))
-  (json-response 400 {:error "Invalid filename"})
+  (if (not (safe-filename? filename))
+    (json-response 400 {:error "Invalid filename"})
 
-  (let [file (io/file "uploads" filename)]
-    (if (and (.exists file) (.isFile file))
-      {:status 200
-       :headers {"Content-Type" (content-type file)
-                 "Cache-Control" "public, max-age=31536000"} ;; 1 year
-       :body (io/input-stream file)}
+    (let [file (io/file "uploads" filename)]
+      (if (and (.exists file) (.isFile file))
+        {:status 200
+         :headers {"Content-Type" (content-type file)
+                   "Cache-Control" "public, max-age=31536000"} ;; 1 year
+         :body (io/input-stream file)}
 
-      (json-response 404 {:error "Not Found"})))))
+        (json-response 404 {:error "Not Found"})))))
 
 (defn find-all-products
   [{:keys [brand name]}]
@@ -197,3 +201,34 @@
                     (into {}))]
     (json-response 200
                    {:content (find-all-products params)})))
+
+(defn create-orders
+  [req]
+  (let [data (parse-body req)]
+    (if (s/valid? ::schemas/order data)
+      (try
+        (let [aggregate-id (ObjectId.)
+              order (insert-returning! db "events"
+                                       {:type           "order-created"
+                                        :aggregate-id   (str aggregate-id)
+                                        :aggregate-type "order"
+                                        :payload        data
+                                        :created-at     (str (LocalDateTime/now))})]
+
+          (doseq [product data] (insert-returning! db "events"
+                                                   {:type           "stock-reserved"
+                                                    :aggregate-id   (product :product-id)
+                                                    :aggregate-type "product"
+                                                    :payload        {:quantity (:quantity product)
+                                                                     :order-id aggregate-id}
+                                                    :created-at     (str (LocalDateTime/now))}))
+
+          (println "[INFO]: Pedido inserido:" order)
+
+          (json-response 201 {:orderId (str aggregate-id)}))
+        (catch Exception e
+          (println "[ERROR]:" (.getMessage e))
+          (json-response 500 {:error (.getMessage e)})))
+      (json-response 400
+                     {:error   "Payload inválido"
+                      :details (s/explain-str ::schemas/order data)}))))

@@ -29,6 +29,7 @@
          (let [id (get-in req [:path-params :id])]
            (handler/update-products-handler id)))
   (GET "/images/:filename" [filename] (handler/get-image filename))
+  (POST "/orders" req (handler/create-orders req))
   (fn                      [_]  {:status 404 :body "Not Found"}))
 
 (def app-with-cors
