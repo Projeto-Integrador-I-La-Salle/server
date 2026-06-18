@@ -251,6 +251,7 @@
                  price   (or (:price product) 0)]
              {:product-id   (:product-id item)
               :product-name (:name product)
+              :images       (:images product)
               :quantity     qty
               :unit-price   price
               :total        (* qty price)}))
