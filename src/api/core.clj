@@ -21,16 +21,17 @@
           (update resp :headers merge cors-headers))))))
 
 (defroutes app
-  (GET   "/health"         []    {:status 200 :body "OK"})
-  (POST  "/products"       req   (handler/products-handler    req))
-  (GET   "/products"       req   (handler/get-all-products req))
-  (GET   "/products/:id"   [id]  (handler/get-by-aggregate-id id))
-  (PATCH "/products/:id"   req
+  (GET   "/health"           []    {:status 200 :body "OK"})
+  (POST  "/products"         req   (handler/products-handler    req))
+  (GET   "/products"         req   (handler/get-all-products req))
+  (GET   "/products/:id"     [id]  (handler/get-by-aggregate-id id))
+  (PATCH "/products/:id"     req
          (let [id (get-in req [:path-params :id])]
            (handler/update-products-handler id)))
-  (GET "/images/:filename" [filename] (handler/get-image filename))
-  (POST "/orders" req (handler/create-orders req))
-  (fn                      [_]  {:status 404 :body "Not Found"}))
+  (GET   "/images/:filename" [filename] (handler/get-image filename))
+  (POST  "/orders"           req (handler/create-orders req))
+  (GET   "/orders"           req (handler/get-all-orders req))
+  (fn                        [_]  {:status 404 :body "Not Found"}))
 
 (def app-with-cors
   (wrap-cors app))

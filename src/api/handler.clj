@@ -67,6 +67,12 @@
   [state event]
   (update state :quantity - (get-in event [:payload :quantity])))
 
+(defmethod apply-event :order/order-created
+  [_state event]
+  {:id         (:aggregate-id event)
+   :created-at (:created-at event)
+   :items      (:payload event)})
+
 (defn project
   ([events]
    (project {} events))
@@ -202,33 +208,65 @@
     (json-response 200
                    {:content (find-all-products params)})))
 
-(defn create-orders
-  [req]
+(defn create-orders [req]
   (let [data (parse-body req)]
     (if (s/valid? ::schemas/order data)
       (try
-        (let [aggregate-id (ObjectId.)
-              order (insert-returning! db "events"
-                                       {:type           "order-created"
-                                        :aggregate-id   (str aggregate-id)
-                                        :aggregate-type "order"
-                                        :payload        data
-                                        :created-at     (str (LocalDateTime/now))})]
+        (let [aggregate-id (ObjectId.)]
+          (insert-returning! db "events"
+                             {:type           "order-created"
+                              :aggregate-id   (str aggregate-id)
+                              :aggregate-type "order"
+                              :payload        data
+                              :created-at     (str (LocalDateTime/now))})
 
-          (doseq [product data] (insert-returning! db "events"
-                                                   {:type           "stock-reserved"
-                                                    :aggregate-id   (product :product-id)
-                                                    :aggregate-type "product"
-                                                    :payload        {:quantity (:quantity product)
-                                                                     :order-id aggregate-id}
-                                                    :created-at     (str (LocalDateTime/now))}))
-
-          (println "[INFO]: Pedido inserido:" order)
-
-          (json-response 201 {:orderId (str aggregate-id)}))
+          (doseq [item data] ;; data é a lista diretamente
+            (insert-returning! db "events"
+                               {:type           "stock-reserved"
+                                :aggregate-id   (:product-id item)
+                                :aggregate-type "product"
+                                :payload        {:quantity (:quantity item)
+                                                 :order-id (str aggregate-id)}
+                                :created-at     (str (LocalDateTime/now))}))
+          (json-response 201 {:order-id (str aggregate-id)}))
         (catch Exception e
-          (println "[ERROR]:" (.getMessage e))
           (json-response 500 {:error (.getMessage e)})))
-      (json-response 400
-                     {:error   "Payload inválido"
-                      :details (s/explain-str ::schemas/order data)}))))
+      (json-response 400 {:error "Payload inválido"
+                          :details (s/explain-str ::schemas/order data)}))))
+;; Get orders section
+(defn find-order [aggregate-id]
+  (->> (find-maps-kebab db "events" {:aggregate-id (str aggregate-id)
+                                     :aggregate-type "order"})
+       (project)))
+
+(defn enrich-order-items-batch [items]
+  (let [products (->> items
+                      (map :product-id)
+                      (distinct)
+                      (map (fn [id] [id (find-product id)]))
+                      (into {}))]
+    (map (fn [item]
+           (let [product (get products (:product-id item))
+                 qty     (:quantity item)
+                 price   (or (:price product) 0)]
+             {:product-id   (:product-id item)
+              :product-name (:name product)
+              :quantity     qty
+              :unit-price   price
+              :total        (* qty price)}))
+         items)))
+
+(defn find-all-orders []
+  (->> (find-maps-kebab db "events" {:aggregate-type "order"})
+       (group-by :aggregate-id)
+       (vals)
+       (map project)
+       (map (fn [order]
+              (let [enriched-items (enrich-order-items-batch (:items order))
+                    order-total    (reduce + (map :total enriched-items))]
+                (assoc order
+                       :items       enriched-items
+                       :order-total order-total))))))
+
+(defn get-all-orders [_req]
+  (json-response 200 {:content (map serialize (find-all-orders))}))
